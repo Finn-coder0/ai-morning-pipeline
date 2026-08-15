@@ -1,0 +1,45 @@
+name: AI Morning Daily MVP
+
+on:
+  workflow_dispatch:
+
+  schedule:
+    # 21:30 UTC = 次日 05:30 北京时间
+    - cron: "30 21 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  build-digest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Build AI Morning candidate digest
+        run: python -m src.main
+
+      - name: Add digest to job summary
+        shell: bash
+        run: |
+          echo "## AI Morning MVP" >> "$GITHUB_STEP_SUMMARY"
+          cat output/latest.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload digest artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-morning-digest-${{ github.run_id }}
+          path: output/
+          retention-days: 14
