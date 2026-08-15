@@ -1,12 +1,12 @@
-version: "0.2"
+version: "0.3"
 timezone: Asia/Shanghai
 lookback_hours: 30
 max_items_per_feed: 25
 max_selected: 5
 
-# v0.2 quality controls
+# v0.3 quality controls
 min_total: 50
-min_editorial_signal: 20
+min_editorial_signal: 16
 default_source_cap: 2
 
 category_caps:
