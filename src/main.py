@@ -144,7 +144,6 @@ def score_item(item, now):
     business_hits = keyword_count(text, BUSINESS_TERMS)
     marketing_hits = keyword_count(text, MARKETING_TERMS)
 
-    # v0.2: generic AI terminology alone is no longer enough to dominate ranking.
     industry_impact = min(20, 4 + min(ai_hits, 3) * 2 + impact_hits * 4)
     business_impact = min(15, business_hits * 3 + min(impact_hits, 2))
     marketing_relevance = min(15, marketing_hits * 3)
@@ -193,7 +192,7 @@ def score_item(item, now):
 def fetch_sources(cfg):
     now = datetime.now(timezone.utc)
     items, reports = [], []
-    max_per_feed = int(cfg.get("max_items_per_feed", 20))
+    max_per_feed = int(cfg.get("max_items_per_feed", 25))
     lookback = float(cfg.get("lookback_hours", 30))
 
     for src in cfg["sources"]:
@@ -202,9 +201,11 @@ def fetch_sources(cfg):
             "name": src["name"],
             "ok": False,
             "fetched": 0,
+            "recent": 0,
             "kept": 0,
             "error": None,
         }
+
         try:
             feed = feedparser.parse(src["url"])
             if getattr(feed, "bozo", False) and not feed.entries:
@@ -213,8 +214,14 @@ def fetch_sources(cfg):
                 )
 
             report["fetched"] = len(feed.entries)
-            for entry in feed.entries[:max_per_feed]:
+            recent_entries = []
+
+            # v0.3 fix:
+            # scan the whole feed first, determine dates, then sort newest-first.
+            # Do NOT slice the feed before checking recency.
+            for entry in feed.entries:
                 published = parse_date(entry)
+
                 if published is not None:
                     age_h = (now - published).total_seconds() / 3600
                     if age_h < -2 or age_h > lookback:
@@ -225,9 +232,30 @@ def fetch_sources(cfg):
                 summary = clean_text(
                     entry.get("summary") or entry.get("description") or ""
                 )
+
                 if not title or not url:
                     continue
 
+                recent_entries.append(
+                    {
+                        "published_sort": (
+                            published.timestamp() if published else -1
+                        ),
+                        "published": published,
+                        "title": title,
+                        "url": url,
+                        "summary": summary,
+                    }
+                )
+
+            recent_entries.sort(
+                key=lambda x: x["published_sort"],
+                reverse=True,
+            )
+            report["recent"] = len(recent_entries)
+
+            for row in recent_entries[:max_per_feed]:
+                published = row["published"]
                 items.append(
                     {
                         "source_id": src["id"],
@@ -240,18 +268,19 @@ def fetch_sources(cfg):
                                 cfg.get("default_source_cap", 2),
                             )
                         ),
-                        "title": title,
-                        "url": url,
+                        "title": row["title"],
+                        "url": row["url"],
                         "published_at": (
                             published.isoformat() if published else None
                         ),
-                        "summary": summary[:900],
+                        "summary": row["summary"][:900],
                         "collected_at": now.isoformat(),
                     }
                 )
                 report["kept"] += 1
 
             report["ok"] = True
+
         except Exception as ex:
             report["error"] = f"{type(ex).__name__}: {ex}"
 
@@ -268,7 +297,6 @@ def dedupe(items):
         seen.add(item["url"])
         unique.append(item)
 
-    # Prefer stronger source tiers when similar titles represent the same event.
     rank = {"A": 3, "B": 2, "C": 1}
     unique.sort(
         key=lambda x: (
@@ -281,10 +309,7 @@ def dedupe(items):
     kept, token_sets = [], []
     for item in unique:
         toks = title_tokens(item["title"])
-        if any(
-            jaccard(toks, kept_tokens) >= 0.58
-            for kept_tokens in token_sets
-        ):
+        if any(jaccard(toks, old) >= 0.58 for old in token_sets):
             continue
         kept.append(item)
         token_sets.append(toks)
@@ -294,7 +319,7 @@ def dedupe(items):
 def select_diverse(scored, cfg):
     max_selected = int(cfg.get("max_selected", 5))
     min_total = int(cfg.get("min_total", 50))
-    min_editorial_signal = int(cfg.get("min_editorial_signal", 20))
+    min_editorial_signal = int(cfg.get("min_editorial_signal", 16))
     default_source_cap = int(cfg.get("default_source_cap", 2))
     category_caps = cfg.get(
         "category_caps",
@@ -304,42 +329,58 @@ def select_diverse(scored, cfg):
     source_counts = defaultdict(int)
     category_counts = defaultdict(int)
     selected = []
+    audit = []
 
-    for item in sorted(
+    ranked = sorted(
         scored,
         key=lambda x: x["scores"]["total"],
         reverse=True,
-    ):
-        if item["scores"]["total"] < min_total:
-            continue
-        if item["editorial_signal"] < min_editorial_signal:
-            continue
+    )
 
+    for item in ranked:
+        reason = None
         source_id = item["source_id"]
         category = item.get("source_category", "")
-        source_cap = int(
-            item.get("selection_cap", default_source_cap)
-        )
-        category_cap = int(
-            category_caps.get(category, max_selected)
-        )
+        source_cap = int(item.get("selection_cap", default_source_cap))
+        category_cap = int(category_caps.get(category, max_selected))
 
-        if source_counts[source_id] >= source_cap:
-            continue
-        if category_counts[category] >= category_cap:
-            continue
+        if item["scores"]["total"] < min_total:
+            reason = "below_total"
+        elif item["editorial_signal"] < min_editorial_signal:
+            reason = "below_editorial_signal"
+        elif category in {"research", "community"} and item["scores"]["total"] < 58:
+            reason = "weak_research_or_community"
+        elif source_counts[source_id] >= source_cap:
+            reason = "source_cap"
+        elif category_counts[category] >= category_cap:
+            reason = "category_cap"
 
-        selected.append(item)
-        source_counts[source_id] += 1
-        category_counts[category] += 1
+        if reason is None and len(selected) < max_selected:
+            selected.append(item)
+            source_counts[source_id] += 1
+            category_counts[category] += 1
+            audit.append({
+                "title": item["title"],
+                "source": item["source_name"],
+                "category": category,
+                "total": item["scores"]["total"],
+                "editorial_signal": item["editorial_signal"],
+                "decision": "selected",
+            })
+        else:
+            audit.append({
+                "title": item["title"],
+                "source": item["source_name"],
+                "category": category,
+                "total": item["scores"]["total"],
+                "editorial_signal": item["editorial_signal"],
+                "decision": reason or "max_selected",
+            })
 
-        if len(selected) >= max_selected:
-            break
-
-    return selected
+    return selected, audit[:30]
 
 
-def render(selected, reports, now):
+def render(selected, audit, reports, now):
     OUT.mkdir(exist_ok=True)
     date_label = now.astimezone(
         timezone(timedelta(hours=8))
@@ -348,14 +389,14 @@ def render(selected, reports, now):
     md = [
         f"# AI Morning｜{date_label} 候选清单",
         "",
-        "> v0.2 deterministic MVP — 无 LLM / 无 API Key",
-        "> 目标：来源多样、减少论文挤占、优先商业与营销相关信号。",
+        "> v0.3 deterministic MVP — 无 LLM / 无 API Key",
+        "> 修复：先扫描完整 feed，再按发布时间倒序筛选；增加候选审计。",
         "",
     ]
 
     if not selected:
         md += [
-            "今天没有达到 V0.2 门槛的候选项；不为了凑 5 条而降低质量。",
+            "今天没有达到 V0.3 门槛的候选项；不为了凑 5 条而降低质量。",
             "",
         ]
 
@@ -363,22 +404,10 @@ def render(selected, reports, now):
         s = item["scores"]
         md += [
             f"## {i:02d}｜{item['title']}",
-            (
-                f"- 来源：{item['source_name']}（Tier "
-                f"{item['source_tier']} / {item['source_category']}）"
-            ),
-            (
-                f"- 总分：**{s['total']}** ｜可信 "
-                f"{s['credibility']} / 新鲜 {s['freshness']} / "
-                f"行业 {s['industry_impact']} / 商业 "
-                f"{s['business_impact']} / 营销 "
-                f"{s['marketing_relevance']} / 新意 {s['novelty']}"
-            ),
+            f"- 来源：{item['source_name']}（Tier {item['source_tier']} / {item['source_category']}）",
+            f"- 总分：**{s['total']}** ｜可信 {s['credibility']} / 新鲜 {s['freshness']} / 行业 {s['industry_impact']} / 商业 {s['business_impact']} / 营销 {s['marketing_relevance']} / 新意 {s['novelty']}",
             f"- Editorial signal：{item['editorial_signal']}",
-            (
-                "- Marketing Watch 候选："
-                f"{'是' if item['marketing_watch_candidate'] else '否'}"
-            ),
+            f"- Marketing Watch 候选：{'是' if item['marketing_watch_candidate'] else '否'}",
             f"- 链接：{item['url']}",
             "",
         ]
@@ -387,25 +416,28 @@ def render(selected, reports, now):
     for report in reports:
         md.append(
             f"- {'✅' if report['ok'] else '⚠️'} {report['name']}: "
-            f"fetched={report['fetched']}, kept={report['kept']}"
-            + (
-                f", error={report['error']}"
-                if report["error"]
-                else ""
-            )
+            f"fetched={report['fetched']}, recent={report['recent']}, kept={report['kept']}"
+            + (f", error={report['error']}" if report["error"] else "")
         )
 
-    (OUT / "latest.md").write_text(
-        "\n".join(md),
+    (OUT / "latest.md").write_text("\n".join(md), encoding="utf-8")
+
+    payload = {
+        "generated_at": now.isoformat(),
+        "version": "0.3",
+        "selected": selected,
+        "source_reports": reports,
+    }
+    (OUT / "latest.json").write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
-    (OUT / "latest.json").write_text(
+    (OUT / "audit.json").write_text(
         json.dumps(
             {
                 "generated_at": now.isoformat(),
-                "version": "0.2",
-                "selected": selected,
-                "source_reports": reports,
+                "version": "0.3",
+                "top_candidates": audit,
             },
             ensure_ascii=False,
             indent=2,
@@ -416,7 +448,7 @@ def render(selected, reports, now):
     tpl = Template(
         """<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>AI Morning MVP</title>
 <style>body{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",Arial,sans-serif;margin:0;color:#1f2937;line-height:1.75}main{max-width:720px;margin:auto;padding:28px 20px 48px}.brand{color:#0d1d3a;font-size:30px;font-weight:800}.kicker{color:#2563eb;font-size:12px;letter-spacing:1.6px;font-weight:700}.item{padding:22px 0;border-bottom:1px solid #e5e7eb}h2{font-size:20px;color:#0d1d3a;margin:0 0 10px}.meta{font-size:13px;color:#667085}.score{color:#2563eb;font-weight:700}.watch{color:#00a6ad;font-weight:700}.foot{margin-top:30px;color:#667085;font-size:13px}</style></head>
-<body><main><div class="brand">AI MORNING</div><div class="kicker">ZERO-COST MVP V0.2 / {{date}}</div><p>自动采集与来源平衡后的候选清单，不是正式发布稿。</p>
+<body><main><div class="brand">AI MORNING</div><div class="kicker">ZERO-COST MVP V0.3 / {{date}}</div><p>自动采集与来源平衡后的候选清单，不是正式发布稿。</p>
 {% for x in items %}<section class="item"><h2>{{"%02d"|format(loop.index)}}｜{{x.title}}</h2><div class="meta">{{x.source_name}} · {{x.source_category}} · Tier {{x.source_tier}} · <span class="score">{{x.scores.total}}分</span>{% if x.marketing_watch_candidate %} · <span class="watch">Marketing Watch</span>{% endif %}</div><p><a href="{{x.url}}">{{x.url}}</a></p></section>{% endfor %}
 <div class="foot">AI Morning · 每天早上 5–8 分钟，读懂 AI 与市场。</div></main></body></html>"""
     )
@@ -427,20 +459,15 @@ def render(selected, reports, now):
 
 
 def main():
-    cfg = yaml.safe_load(
-        CONFIG.read_text(encoding="utf-8")
-    )
+    cfg = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
     now = datetime.now(timezone.utc)
 
     items, reports = fetch_sources(cfg)
     items = dedupe(items)
-    scored = [
-        score_item(item, now)
-        for item in items
-    ]
-    selected = select_diverse(scored, cfg)
+    scored = [score_item(item, now) for item in items]
+    selected, audit = select_diverse(scored, cfg)
 
-    render(selected, reports, now)
+    render(selected, audit, reports, now)
 
     print(f"Collected: {len(items)} unique candidates")
     print(f"Selected: {len(selected)}")
@@ -450,7 +477,16 @@ def main():
             f"[{item['source_category']}] "
             f"{item['title'][:90]}"
         )
+
+    print("Source health:")
+    for report in reports:
+        print(
+            f"- {report['name']}: fetched={report['fetched']}, "
+            f"recent={report['recent']}, kept={report['kept']}"
+        )
+
     print(f"Output: {OUT / 'latest.md'}")
+    print(f"Audit: {OUT / 'audit.json'}")
 
 
 if __name__ == "__main__":
