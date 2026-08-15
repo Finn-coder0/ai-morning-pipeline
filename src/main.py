@@ -16,30 +16,58 @@ ROOT = Path(__file__).resolve().parents[1]
 CONFIG = ROOT / "config" / "sources.yaml"
 OUT = ROOT / "output"
 
-AI_TERMS = {
-    "ai", "artificial intelligence", "llm", "gpt", "claude", "gemini",
-    "model", "agent", "agents", "inference", "training", "reasoning",
-    "multimodal", "openai", "anthropic", "deepmind", "hugging face",
-    "transformer", "chip", "gpu", "nvidia", "machine learning",
-    "generative", "genai", "copilot", "foundation model",
+# Strong AI signals must appear as real words/phrases.
+# "agent" or "model" alone is intentionally NOT enough.
+STRONG_AI_PATTERNS = [
+    r"\bAI\b",
+    r"\bartificial intelligence\b",
+    r"\bmachine learning\b",
+    r"\blarge language models?\b",
+    r"\bLLMs?\b",
+    r"\bGPT(?:-\d+(?:\.\d+)?)?\b",
+    r"\bChatGPT\b",
+    r"\bOpenAI\b",
+    r"\bAnthropic\b",
+    r"\bClaude\b",
+    r"\bGemini\b",
+    r"\bDeepMind\b",
+    r"\bHugging Face\b",
+    r"\bgenerative AI\b",
+    r"\bGenAI\b",
+    r"\bfoundation models?\b",
+    r"\bNVIDIA\b",
+    r"\bCopilot\b",
+    r"\bmultimodal AI\b",
+    r"\bAI agents?\b",
+    r"\bagentic AI\b",
+]
+STRONG_AI_RE = [re.compile(p, re.IGNORECASE) for p in STRONG_AI_PATTERNS]
+
+AI_SCORING_TERMS = {
+    "artificial intelligence", "machine learning", "llm", "gpt", "chatgpt",
+    "openai", "anthropic", "claude", "gemini", "deepmind", "hugging face",
+    "generative ai", "foundation model", "nvidia", "copilot", "multimodal",
+    "agentic ai", "ai agent", "reasoning", "inference",
 }
 BUSINESS_TERMS = {
     "launch", "release", "pricing", "revenue", "enterprise", "funding",
     "acquisition", "partnership", "customer", "business", "market", "sales",
     "cloud", "subscription", "policy", "regulation", "copyright", "antitrust",
     "advertising", "commerce", "product", "platform", "developer", "api",
+    "startup", "investment", "deal",
 }
 MARKETING_TERMS = {
     "marketing", "brand", "advertising", "ads", "search", "seo", "content",
     "creator", "customer", "commerce", "campaign", "recommendation",
     "discovery", "social", "retail", "conversion", "audience", "media",
     "publisher", "shopping", "merchant", "performance", "creative",
+    "recommendations", "e-commerce", "marketplace",
 }
 HIGH_IMPACT_TERMS = {
     "launch", "introducing", "release", "new model", "frontier",
-    "open source", "agent", "agents", "regulation", "lawsuit",
-    "acquisition", "funding", "chip", "benchmark", "safety",
-    "copyright", "search", "partnership", "enterprise", "api",
+    "open source", "regulation", "lawsuit", "acquisition", "funding",
+    "chip", "benchmark", "safety", "copyright", "search", "partnership",
+    "enterprise", "api", "default", "acquires", "investment",
 }
 STOPWORDS = {
     "the", "a", "an", "and", "or", "for", "to", "of", "in", "on", "with",
@@ -96,13 +124,13 @@ def clean_text(s):
     return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", s or "")).strip()
 
 
-def keyword_count(text, terms):
-    low = text.lower()
+def has_strong_ai_signal(text):
+    return any(pattern.search(text or "") for pattern in STRONG_AI_RE)
+
+
+def phrase_count(text, terms):
+    low = (text or "").lower()
     return sum(1 for term in terms if term in low)
-
-
-def has_ai_signal(text):
-    return keyword_count(text, AI_TERMS) > 0
 
 
 def title_tokens(title):
@@ -149,42 +177,33 @@ def score_item(item, now):
     credibility = source_credibility(item["source_tier"])
     freshness = freshness_score(age_hours)
 
-    ai_hits = keyword_count(text, AI_TERMS)
-    impact_hits = keyword_count(text, HIGH_IMPACT_TERMS)
-    business_hits = keyword_count(text, BUSINESS_TERMS)
-    marketing_hits = keyword_count(text, MARKETING_TERMS)
+    ai_hits = phrase_count(text, AI_SCORING_TERMS)
+    impact_hits = phrase_count(text, HIGH_IMPACT_TERMS)
+    business_hits = phrase_count(text, BUSINESS_TERMS)
+    marketing_hits = phrase_count(text, MARKETING_TERMS)
 
-    industry_impact = min(20, 4 + min(ai_hits, 4) * 2 + impact_hits * 3)
+    industry_impact = min(20, 5 + min(ai_hits, 4) * 2 + impact_hits * 3)
     business_impact = min(15, business_hits * 3 + min(impact_hits, 3))
     marketing_relevance = min(15, marketing_hits * 3)
     novelty = min(10, 4 + impact_hits * 2)
 
-    # Small editorial boost for first-party news and marketing-platform news.
     if item["source_category"] == "official":
         industry_impact = min(20, industry_impact + 2)
     if item["source_category"] == "marketing":
         marketing_relevance = min(15, marketing_relevance + 3)
 
+    # Research is valuable but should not beat first-party/business news just
+    # because an abstract contains many AI keywords.
+    if item["source_category"] == "research":
+        credibility = min(credibility, 16)
+        industry_impact = min(industry_impact, 18)
+
     total = (
-        credibility
-        + freshness
-        + industry_impact
-        + business_impact
-        + marketing_relevance
-        + novelty
+        credibility + freshness + industry_impact + business_impact
+        + marketing_relevance + novelty
     )
     editorial_signal = (
         industry_impact + business_impact + marketing_relevance + novelty
-    )
-
-    route = (
-        "top_news"
-        if total >= 80
-        else "daily"
-        if total >= 65
-        else "weekly_pool"
-        if total >= 47
-        else "discard"
     )
 
     return {
@@ -199,10 +218,12 @@ def score_item(item, now):
             "total": total,
         },
         "editorial_signal": editorial_signal,
-        "route": route,
         "marketing_watch_candidate": (
             marketing_relevance >= 9 and credibility >= 18
         ),
+        "needs_primary_verification": item["source_category"] in {
+            "media", "community"
+        },
         "age_hours": round(age_hours, 1) if age_hours is not None else None,
     }
 
@@ -210,7 +231,7 @@ def score_item(item, now):
 def fetch_sources(cfg):
     now = datetime.now(timezone.utc)
     items, reports = [], []
-    max_per_feed = int(cfg.get("max_items_per_feed", 30))
+    max_per_feed = int(cfg.get("max_items_per_feed", 35))
     lookback = float(cfg.get("lookback_hours", 36))
 
     for src in cfg["sources"]:
@@ -238,15 +259,13 @@ def fetch_sources(cfg):
 
             for entry in feed.entries:
                 published = parse_date(entry)
-
                 if published is None:
                     report["undated"] += 1
-                    if not bool(src.get("allow_undated", False)):
-                        continue
-                else:
-                    age_h = (now - published).total_seconds() / 3600
-                    if age_h < -2 or age_h > lookback:
-                        continue
+                    continue
+
+                age_h = (now - published).total_seconds() / 3600
+                if age_h < -2 or age_h > lookback:
+                    continue
 
                 title = clean_text(entry.get("title", ""))
                 url = canonicalize_url(entry.get("link", ""))
@@ -257,15 +276,16 @@ def fetch_sources(cfg):
                     continue
 
                 text = f"{title} {summary}"
-                if bool(src.get("require_ai_signal", False)) and not has_ai_signal(text):
+                if (
+                    src.get("topic_mode") == "strict_ai_filter"
+                    and not has_strong_ai_signal(text)
+                ):
                     report["topic_filtered"] += 1
                     continue
 
                 recent_entries.append(
                     {
-                        "published_sort": (
-                            published.timestamp() if published else -1
-                        ),
+                        "published_sort": published.timestamp(),
                         "published": published,
                         "title": title,
                         "url": url,
@@ -280,7 +300,6 @@ def fetch_sources(cfg):
             report["recent"] = len(recent_entries)
 
             for row in recent_entries[:max_per_feed]:
-                published = row["published"]
                 items.append(
                     {
                         "source_id": src["id"],
@@ -295,9 +314,7 @@ def fetch_sources(cfg):
                         ),
                         "title": row["title"],
                         "url": row["url"],
-                        "published_at": (
-                            published.isoformat() if published else None
-                        ),
+                        "published_at": row["published"].isoformat(),
                         "summary": row["summary"][:1000],
                         "collected_at": now.isoformat(),
                     }
@@ -343,7 +360,7 @@ def dedupe(items):
 
 def select_diverse(scored, cfg):
     max_selected = int(cfg.get("max_selected", 5))
-    max_reserve = int(cfg.get("max_reserve", 8))
+    max_reserve = int(cfg.get("max_reserve", 10))
     min_total = int(cfg.get("min_total", 47))
     min_editorial_signal = int(cfg.get("min_editorial_signal", 14))
     default_source_cap = int(cfg.get("default_source_cap", 2))
@@ -357,6 +374,10 @@ def select_diverse(scored, cfg):
         scored,
         key=lambda x: (
             x["scores"]["total"],
+            {"official": 5, "marketing": 4, "media": 3,
+             "research": 2, "community": 1}.get(
+                x.get("source_category", ""), 0
+            ),
             x.get("published_at") or "",
         ),
         reverse=True,
@@ -373,8 +394,18 @@ def select_diverse(scored, cfg):
             reason = "below_total"
         elif item["editorial_signal"] < min_editorial_signal:
             reason = "below_editorial_signal"
-        elif category in {"research", "community"} and item["scores"]["total"] < 58:
-            reason = "weak_research_or_community"
+        elif (
+            category == "research"
+            and item["scores"]["business_impact"] < 6
+            and item["scores"]["marketing_relevance"] < 6
+            and item["scores"]["industry_impact"] < 17
+        ):
+            reason = "research_not_actionable"
+        elif (
+            category == "community"
+            and item["scores"]["total"] < 60
+        ):
+            reason = "weak_community"
         elif source_counts[source_id] >= source_cap:
             reason = "source_cap"
         elif category_counts[category] >= category_cap:
@@ -389,8 +420,8 @@ def select_diverse(scored, cfg):
             decision = reason or "max_selected"
             if (
                 len(reserve) < max_reserve
-                and item["scores"]["total"] >= 42
-                and item["source_category"] not in {"research", "community"}
+                and item["scores"]["total"] >= 43
+                and category not in {"research", "community"}
             ):
                 reserve.append(item)
 
@@ -401,12 +432,12 @@ def select_diverse(scored, cfg):
                 "category": category,
                 "age_hours": item.get("age_hours"),
                 "total": item["scores"]["total"],
-                "editorial_signal": item["editorial_signal"],
+                "marketing_relevance": item["scores"]["marketing_relevance"],
                 "decision": decision,
             }
         )
 
-    return selected, reserve, audit[:40]
+    return selected, reserve, audit[:50]
 
 
 def render(selected, reserve, audit, reports, now):
@@ -418,25 +449,23 @@ def render(selected, reserve, audit, reports, now):
     md = [
         f"# AI Morning｜{date_label} 候选清单",
         "",
-        "> v0.4 source-pool MVP — 无 LLM / 无 API Key",
-        "> 新增官方 AI / 营销平台来源；无日期内容不进入 Daily。",
+        "> v0.5 validation build — 无 LLM / 无 API Key",
+        "> 严格 AI 词边界 + 高频 AI 媒体发现源 + 来源多样性。",
         "",
     ]
 
     if not selected:
-        md += [
-            "今天没有达到 V0.4 门槛的正式候选项。",
-            "",
-        ]
+        md += ["今天没有达到 V0.5 门槛的候选项。", ""]
 
     for i, item in enumerate(selected, 1):
         s = item["scores"]
         md += [
             f"## {i:02d}｜{item['title']}",
-            f"- 来源：{item['source_name']}（Tier {item['source_tier']} / {item['source_category']}）",
+            f"- 来源：{item['source_name']}（{item['source_category']}）",
             f"- 发布时间距今：{item.get('age_hours')} 小时",
-            f"- 总分：**{s['total']}** ｜可信 {s['credibility']} / 新鲜 {s['freshness']} / 行业 {s['industry_impact']} / 商业 {s['business_impact']} / 营销 {s['marketing_relevance']} / 新意 {s['novelty']}",
-            f"- Marketing Watch 候选：{'是' if item['marketing_watch_candidate'] else '否'}",
+            f"- 总分：**{s['total']}** ｜行业 {s['industry_impact']} / 商业 {s['business_impact']} / 营销 {s['marketing_relevance']}",
+            f"- Marketing Watch：{'是' if item['marketing_watch_candidate'] else '否'}",
+            f"- 需回查一手来源：{'是' if item['needs_primary_verification'] else '否'}",
             f"- 链接：{item['url']}",
             "",
         ]
@@ -455,8 +484,7 @@ def render(selected, reserve, audit, reports, now):
         md.append(
             f"- {'✅' if report['ok'] else '⚠️'} {report['name']}: "
             f"fetched={report['fetched']}, recent={report['recent']}, "
-            f"kept={report['kept']}, undated={report['undated']}, "
-            f"topic_filtered={report['topic_filtered']}"
+            f"kept={report['kept']}, topic_filtered={report['topic_filtered']}"
             + (f", error={report['error']}" if report["error"] else "")
         )
 
@@ -465,7 +493,7 @@ def render(selected, reserve, audit, reports, now):
         json.dumps(
             {
                 "generated_at": now.isoformat(),
-                "version": "0.4",
+                "version": "0.5",
                 "selected": selected,
                 "reserve": reserve,
                 "source_reports": reports,
@@ -479,7 +507,7 @@ def render(selected, reserve, audit, reports, now):
         json.dumps(
             {
                 "generated_at": now.isoformat(),
-                "version": "0.4",
+                "version": "0.5",
                 "top_candidates": audit,
             },
             ensure_ascii=False,
@@ -491,7 +519,7 @@ def render(selected, reserve, audit, reports, now):
     tpl = Template(
         """<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>AI Morning MVP</title>
 <style>body{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",Arial,sans-serif;margin:0;color:#1f2937;line-height:1.75}main{max-width:720px;margin:auto;padding:28px 20px 48px}.brand{color:#0d1d3a;font-size:30px;font-weight:800}.kicker{color:#2563eb;font-size:12px;letter-spacing:1.6px;font-weight:700}.item{padding:22px 0;border-bottom:1px solid #e5e7eb}h2{font-size:20px;color:#0d1d3a;margin:0 0 10px}.meta{font-size:13px;color:#667085}.score{color:#2563eb;font-weight:700}.watch{color:#00a6ad;font-weight:700}.foot{margin-top:30px;color:#667085;font-size:13px}</style></head>
-<body><main><div class="brand">AI MORNING</div><div class="kicker">ZERO-COST MVP V0.4 / {{date}}</div><p>自动采集与来源平衡后的候选清单，不是正式发布稿。</p>
+<body><main><div class="brand">AI MORNING</div><div class="kicker">ZERO-COST MVP V0.5 / {{date}}</div><p>自动采集与来源平衡后的候选清单，不是正式发布稿。</p>
 {% for x in items %}<section class="item"><h2>{{"%02d"|format(loop.index)}}｜{{x.title}}</h2><div class="meta">{{x.source_name}} · {{x.source_category}} · <span class="score">{{x.scores.total}}分</span>{% if x.marketing_watch_candidate %} · <span class="watch">Marketing Watch</span>{% endif %}</div><p><a href="{{x.url}}">{{x.url}}</a></p></section>{% endfor %}
 <div class="foot">AI Morning · 每天早上 5–8 分钟，读懂 AI 与市场。</div></main></body></html>"""
     )
@@ -526,7 +554,6 @@ def main():
         print(
             f"- {report['name']}: fetched={report['fetched']}, "
             f"recent={report['recent']}, kept={report['kept']}, "
-            f"undated={report['undated']}, "
             f"topic_filtered={report['topic_filtered']}"
         )
 
