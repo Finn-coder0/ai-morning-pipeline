@@ -1,0 +1,35 @@
+timezone: Asia/Shanghai
+lookback_hours: 30
+max_items_per_feed: 20
+max_selected: 5
+
+sources:
+  - id: openai
+    name: OpenAI News
+    tier: A
+    url: https://openai.com/news/rss.xml
+    category: official
+
+  - id: huggingface
+    name: Hugging Face Blog
+    tier: A
+    url: https://huggingface.co/blog/feed.xml
+    category: official
+
+  - id: mit_tech_review
+    name: MIT Technology Review
+    tier: B
+    url: https://www.technologyreview.com/feed/
+    category: media
+
+  - id: arxiv_ai
+    name: arXiv CS.AI
+    tier: C
+    url: https://rss.arxiv.org/rss/cs.AI
+    category: research
+
+  - id: hackernews_ai
+    name: Hacker News AI Filter
+    tier: C
+    url: https://hnrss.org/frontpage?q=AI+OR+LLM+OR+GPT+OR+machine+learning
+    category: community

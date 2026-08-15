@@ -1,0 +1,13 @@
+{
+  "brand": "AI Morning",
+  "promise": "每天早上 5–8 分钟，读懂 AI 与市场。",
+  "mvp_mode": "deterministic_no_llm",
+  "score_weights": {
+    "credibility": 25,
+    "freshness": 15,
+    "industry_impact": 20,
+    "business_impact": 15,
+    "marketing_relevance": 15,
+    "novelty": 10
+  }
+}

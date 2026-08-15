@@ -1,0 +1,26 @@
+{
+  "items": [
+    {
+      "source_id": "openai",
+      "source_name": "OpenAI News",
+      "source_tier": "A",
+      "source_category": "official",
+      "title": "OpenAI launches new enterprise AI agent features",
+      "url": "https://example.com/openai-agent",
+      "published_at": "2026-08-15T03:25:56.395551+00:00",
+      "summary": "New agent capabilities for enterprise workflows, customers and business automation.",
+      "collected_at": "2026-08-15T06:25:56.395551+00:00"
+    },
+    {
+      "source_id": "media",
+      "source_name": "Media",
+      "source_tier": "B",
+      "source_category": "media",
+      "title": "Brands rethink search strategy as AI answers change discovery",
+      "url": "https://example.com/ai-search-brand",
+      "published_at": "2026-08-15T01:25:56.395551+00:00",
+      "summary": "AI search changes SEO, content discovery, publishers, brands and advertising.",
+      "collected_at": "2026-08-15T06:25:56.395551+00:00"
+    }
+  ]
+}
