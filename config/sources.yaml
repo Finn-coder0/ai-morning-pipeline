@@ -1,12 +1,9 @@
-version: "0.4"
+version: "0.5"
 timezone: Asia/Shanghai
-
-# Discovery window is slightly wider than the final editorial window
-# to avoid missing global posts because of timezone / feed delay.
 lookback_hours: 36
-max_items_per_feed: 30
+max_items_per_feed: 35
 max_selected: 5
-max_reserve: 8
+max_reserve: 10
 
 min_total: 47
 min_editorial_signal: 14
@@ -15,7 +12,7 @@ default_source_cap: 2
 category_caps:
   official: 3
   marketing: 2
-  media: 2
+  media: 3
   research: 1
   community: 1
 
@@ -26,8 +23,7 @@ sources:
     url: https://openai.com/news/rss.xml
     category: official
     selection_cap: 2
-    allow_undated: false
-    require_ai_signal: false
+    topic_mode: ai_native
 
   - id: google_ai
     name: Google AI
@@ -35,8 +31,7 @@ sources:
     url: https://blog.google/technology/ai/rss/
     category: official
     selection_cap: 2
-    allow_undated: false
-    require_ai_signal: false
+    topic_mode: ai_native
 
   - id: deepmind
     name: Google DeepMind
@@ -44,8 +39,7 @@ sources:
     url: https://deepmind.google/blog/rss.xml
     category: official
     selection_cap: 2
-    allow_undated: false
-    require_ai_signal: false
+    topic_mode: ai_native
 
   - id: meta_news
     name: Meta Newsroom
@@ -53,8 +47,7 @@ sources:
     url: https://about.fb.com/news/feed/
     category: official
     selection_cap: 2
-    allow_undated: false
-    require_ai_signal: true
+    topic_mode: strict_ai_filter
 
   - id: google_ads
     name: Google Ads & Commerce
@@ -62,8 +55,7 @@ sources:
     url: https://blog.google/products/ads-commerce/rss/
     category: marketing
     selection_cap: 2
-    allow_undated: false
-    require_ai_signal: true
+    topic_mode: strict_ai_filter
 
   - id: huggingface
     name: Hugging Face Blog
@@ -71,17 +63,31 @@ sources:
     url: https://huggingface.co/blog/feed.xml
     category: official
     selection_cap: 2
-    allow_undated: false
-    require_ai_signal: false
+    topic_mode: ai_native
+
+  - id: techcrunch_ai
+    name: TechCrunch AI
+    tier: B
+    url: https://techcrunch.com/category/artificial-intelligence/feed/
+    category: media
+    selection_cap: 2
+    topic_mode: ai_native
+
+  - id: ars_tech
+    name: Ars Technica Technology Lab
+    tier: B
+    url: https://feeds.arstechnica.com/arstechnica/technology-lab
+    category: media
+    selection_cap: 1
+    topic_mode: strict_ai_filter
 
   - id: mit_tech_review
     name: MIT Technology Review
     tier: B
     url: https://www.technologyreview.com/feed/
     category: media
-    selection_cap: 2
-    allow_undated: false
-    require_ai_signal: true
+    selection_cap: 1
+    topic_mode: strict_ai_filter
 
   - id: arxiv_ai
     name: arXiv CS.AI
@@ -89,8 +95,7 @@ sources:
     url: https://rss.arxiv.org/rss/cs.AI
     category: research
     selection_cap: 1
-    allow_undated: false
-    require_ai_signal: true
+    topic_mode: ai_native
 
   - id: hackernews_ai
     name: Hacker News AI Filter
@@ -98,5 +103,4 @@ sources:
     url: https://hnrss.org/frontpage?q=AI+OR+LLM+OR+GPT+OR+machine+learning
     category: community
     selection_cap: 1
-    allow_undated: false
-    require_ai_signal: true
+    topic_mode: strict_ai_filter
